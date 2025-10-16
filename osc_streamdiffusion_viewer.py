@@ -534,14 +534,23 @@ class StreamDiffusionGenerator:
     def _initialize_normal_pipeline(self):
         try:
             print("[INFO] 通常のStable Diffusionパイプライン初期化中...")
-            from diffusers import StableDiffusionPipeline
+            from diffusers import StableDiffusionPipeline, EulerAncestralDiscreteScheduler
+            
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             print(f"[INFO] デバイス: {device}")
+            
             self.pipe = StableDiffusionPipeline.from_pretrained(
                 MODEL_ID,
                 torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
                 safety_checker=None,
             ).to(device)
+            
+            # 一度だけ設定
+            self.pipe.scheduler = EulerAncestralDiscreteScheduler.from_config(
+                self.pipe.scheduler.config
+            )
+            print(f"[INFO] Scheduler: {type(self.pipe.scheduler).__name__}")
+            
             if device.type == "cuda":
                 self.pipe.enable_attention_slicing()
                 try:
@@ -549,16 +558,19 @@ class StreamDiffusionGenerator:
                     print("[INFO] xformers enabled")
                 except:
                     pass
+            
             print("[INFO] ウォームアップ中...")
             _ = self.pipe(
-                "test",
-                num_inference_steps=1,
-                guidance_scale=0.0,
+                "a simple test image",
+                num_inference_steps=20,
+                guidance_scale=7.5,
             ).images[0]
+            
             self.is_streamdiffusion = False
             self.is_initialized = True
             print("[SUCCESS] 通常パイプライン初期化完了")
             return True
+        
         except Exception as e:
             print(f"[ERROR] 初期化失敗: {e}")
             if DEBUG_MODE:
@@ -585,6 +597,7 @@ class StreamDiffusionGenerator:
                 print(f"[DEBUG] T_INDEX: {T_INDEX_LIST}")
                 print(f"[DEBUG] is_streamdiffusion: {self.is_streamdiffusion}")
             
+            # 日本語翻訳とプロンプト品質チェック（既存のコード）
             if self._contains_japanese(prompt):
                 print("[DEBUG] 日本語を検出しました。翻訳を試みます...")
                 try:
@@ -597,10 +610,8 @@ class StreamDiffusionGenerator:
                     print(f"  訳: {prompt[:100]}...")
                 except Exception as trans_error:
                     print(f"[WARNING] 翻訳失敗: {trans_error}")
-                    print("[WARNING] 日本語のまま処理を続行します（品質低下の可能性）")
             
-            # プロンプトの品質チェック（強化版）
-            # 視覚的な名詞が含まれているかチェック
+            # プロンプト品質チェック（既存のコード）
             visual_nouns = [
                 'woman', 'man', 'person', 'face', 'portrait', 'landscape', 'mountain', 'ocean', 
                 'sunset', 'city', 'building', 'car', 'animal', 'cat', 'dog', 'tree', 'flower',
@@ -611,7 +622,6 @@ class StreamDiffusionGenerator:
             has_visual_content = any(noun in prompt.lower() for noun in visual_nouns)
             is_too_short = len(prompt.split()) < 3
             
-            # 抽象的キーワード
             abstract_keywords = [
                 '提案', 'フォーム', '考え', 'という', '思う', '研究', '定義', '領域',
                 'suggestion', 'form', 'thinking', 'that', 'this', 'research', 'define', 
@@ -619,11 +629,9 @@ class StreamDiffusionGenerator:
             ]
             has_abstract = any(word in prompt.lower() for word in abstract_keywords)
             
-            # プロンプトが不適切な場合
             if is_too_short or not has_visual_content or has_abstract:
                 print("[WARNING] 不適切なプロンプトを検出しました")
                 print(f"[WARNING] 元のプロンプト: {prompt[:100]}")
-                print(f"[WARNING] 判定: 短すぎる={is_too_short}, 視覚的内容なし={not has_visual_content}, 抽象的={has_abstract}")
                 print("[INFO] ランダムな高品質プロンプトに置き換えます")
                 
                 import random
@@ -633,20 +641,9 @@ class StreamDiffusionGenerator:
                     "a cute fluffy cat with blue eyes sitting on a windowsill, soft natural lighting",
                     "modern city skyline at night, neon lights reflecting on water, cinematic composition",
                     "serene beach scene at sunset, gentle waves, palm trees silhouette, warm colors",
-                    "portrait of an elderly man with wise eyes, dramatic side lighting, black background",
-                    "enchanted forest with sunbeams filtering through trees, misty atmosphere, magical mood",
-                    "elegant woman in red dress, fashion photography, studio lighting, white background",
-                    "powerful waterfall in lush green jungle, long exposure, tropical paradise",
-                    "cozy coffee shop interior, warm ambient lighting, bokeh lights, inviting atmosphere"
                 ]
                 prompt = random.choice(quality_prompts)
                 print(f"[INFO] 新プロンプト: {prompt}")
-            
-            # プロンプトが政治・ニュース系の場合
-            if any(word in prompt for word in ['選挙', '政治', '国政', '議員', 'election', 'politics', 'government']):
-                print("[WARNING] ニュース/政治系のテキストを検出しました")
-                print("[INFO] 風景画像に置き換えます")
-                prompt = "beautiful natural landscape with mountains and pristine lake, golden hour, professional photography"
             
             enhanced_prompt = f"{prompt}, photorealistic, professional photography, 8k uhd, highly detailed face, perfect face, sharp focus, natural lighting, realistic, portrait photography"
             negative_prompt = "low quality, blurry, bad, worst quality, anime, cartoon, painting, illustration, drawing, art, sketch, deformed face, ugly face, bad anatomy, disfigured, mutated"
@@ -654,10 +651,9 @@ class StreamDiffusionGenerator:
             print(f"[DEBUG] 最終プロンプト: {enhanced_prompt[:150]}...")
             
             if self.is_streamdiffusion:
+                # StreamDiffusionの処理（既存のコード）
                 print(f"[GENERATE] StreamDiffusionで生成開始")
                 if self.current_prompt != enhanced_prompt:
-                    print(f"[DEBUG] 新しいプロンプトでprepare()実行")
-                    print(f"[DEBUG] enhanced_prompt: {enhanced_prompt[:100]}...")
                     self.pipe.prepare(
                         prompt=enhanced_prompt,
                         negative_prompt=negative_prompt,
@@ -665,46 +661,40 @@ class StreamDiffusionGenerator:
                         guidance_scale=GUIDANCE_SCALE,
                     )
                     self.current_prompt = enhanced_prompt
-                    print("[DEBUG] prepare()完了")
-                else:
-                    print("[DEBUG] 同じプロンプトなのでprepare()スキップ")
-                
-                print("[DEBUG] pipe()実行中...")
                 output_image = self.pipe()
-                print(f"[DEBUG] pipe()完了: type={type(output_image)}")
-                
-                print("[DEBUG] PIL変換開始...")
                 output = self._convert_output_to_pil(output_image)
-                print(f"[DEBUG] PIL変換完了: {output.size if output else 'None'}")
             
             else:
-                # 通常パイプライン（20ステップで生成）
+                # ★★★ 通常パイプライン（スレッドセーフ版）★★★
                 print(f"[GENERATE] 通常パイプラインで生成開始")
                 import random
                 
                 seed = random.randint(0, 2147483647)
-                
-                # ステップ数を20に固定
                 inference_steps = 20
                 guide_scale = 7.5
                 
-                print(f"[DEBUG] 通常モード: steps={inference_steps}, scale={guide_scale}")
-                print(f"[DEBUG] 実際の設定確認: inference_steps={inference_steps}, guidance_scale={guide_scale}")
+                print(f"[DEBUG] Euler: steps={inference_steps}, scale={guide_scale}, seed={seed}")
                 
                 generator_obj = torch.Generator(device=self.pipe.device).manual_seed(seed)
-                print(f"[DEBUG] パイプライン実行開始 (seed={seed}, steps={inference_steps})")
                 
-                result = self.pipe(
-                    enhanced_prompt,
-                    negative_prompt=negative_prompt,
-                    num_inference_steps=inference_steps,
-                    guidance_scale=guide_scale,
-                    height=IMAGE_HEIGHT,
-                    width=IMAGE_WIDTH,
-                    generator=generator_obj,
-                )
-                output = result.images[0]
-                print(f"[DEBUG] 通常パイプライン完了: {output.size}")
+                print(f"[DEBUG] パイプライン実行 (scheduler={type(self.pipe.scheduler).__name__})")
+                
+                # ★ スレッドロックで保護
+                with self.pipeline_lock:
+                    print("[DEBUG] パイプラインロック取得")
+                    result = self.pipe(
+                        enhanced_prompt,
+                        negative_prompt=negative_prompt,
+                        num_inference_steps=inference_steps,
+                        guidance_scale=guide_scale,
+                        height=IMAGE_HEIGHT,
+                        width=IMAGE_WIDTH,
+                        generator=generator_obj,
+                    )
+                    output = result.images[0]
+                    print(f"[DEBUG] パイプラインロック解放")
+                
+                print(f"[DEBUG] 生成完了: {output.size}")
             
             if output is None:
                 print("[ERROR] 出力画像がNone!")
@@ -720,6 +710,7 @@ class StreamDiffusionGenerator:
             print(f"[PERF] 生成時間: {generation_time:.2f}秒 | 平均FPS: {fps:.2f} fps | モード: {mode}")
             print(f"[SUCCESS] 画像生成成功: size={output.size}, mode={output.mode}")
             return output
+            
         except Exception as e:
             print(f"[ERROR] 画像生成失敗: {e}")
             if DEBUG_MODE:
